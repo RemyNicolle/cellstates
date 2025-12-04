@@ -1,0 +1,16 @@
+__pycache__/
+.venv/
+env/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-wheel-metadata/
+*.egg-info
+/.devcontainer/**/node_modules
+/.git
+.DS_Store

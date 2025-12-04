@@ -3,6 +3,7 @@ import numpy as np
 from scipy.special import gammaln
 from .cluster import Cluster
 from .chelpers import marker_scores
+from .jax_helpers import gene_contribution_table_jax, jax_available, available_jax_devices
 
 
 # ------ helper functions for cluster hierarchies ------

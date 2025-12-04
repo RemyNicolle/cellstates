@@ -1,6 +1,12 @@
 from .cluster import Cluster
 from .helpers import clusters_from_hierarchy, get_hierarchy_df, get_scipy_hierarchy, hierarchy_to_newick
-from .helpers import marker_score_table, gene_contribution_table
+from .helpers import (
+    marker_score_table,
+    gene_contribution_table,
+    gene_contribution_table_jax,
+    jax_available,
+    available_jax_devices,
+)
 from .plotting import plot_hierarchy_scipy
 try:
     from .plotting import plot_hierarchy_ete3
