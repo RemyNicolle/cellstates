@@ -362,7 +362,7 @@ def merge_clusters_hierarchical(Cluster clst,
             delta_LL[j, i] = delta
 
     # array of cluster label
-    cdef np.ndarray[np.int_t, ndim = 1] clusters = np.arange(clst.N_boxes)
+    cdef np.ndarray[np.int64_t, ndim = 1] clusters = np.arange(clst.N_boxes)
 
     delta_LL_history = []
     merge_hierarchy = []
@@ -427,7 +427,7 @@ def optimize_cell_positions_full(Cluster clst):
 
     cdef:
         int cell, c_best, move_count = 0
-        np.ndarray[np.int_t, ndim = 1] cell_iter
+        np.ndarray[np.int64_t, ndim = 1] cell_iter
         np.ndarray[np.float_t, ndim = 1] best_delta_LL
         double delta
 
@@ -536,7 +536,7 @@ cdef class Cluster:
                 d = d[mask, :]
 
         self.LAMBDA = <np.ndarray[np.float_t, ndim = 1]> l
-        self.data = <np.ndarray[np.int_t, ndim = 2]?> d
+        self.data = <np.ndarray[np.int64_t, ndim = 2]?> d
         self.G = d.shape[0]
         self.N_samples = d.shape[1]
 
