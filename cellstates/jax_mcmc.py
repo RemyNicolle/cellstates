@@ -112,9 +112,9 @@ def greedy_partition_sweep_jax(
         dtype = jnp.float64 if enable_x64 else jnp.float32
 
     data_j = jnp.asarray(data, dtype=jnp.int32)
-    lam_j = jnp.asarray(lam, dtype=dtype)
-    lam_sum = jnp.sum(lam_j)
-    B = gammaln(lam_sum) - jnp.sum(gammaln(lam_j))
+    lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
+    lam_sum = jnp.sum(lam_vec)
+    B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 
     clusters_np = np.asarray(clusters, dtype=np.int32)
     K = int(clusters_np.max()) + 1
@@ -132,7 +132,7 @@ def greedy_partition_sweep_jax(
     sizes_np = np.bincount(clusters_np, minlength=K).astype(np.int32)
     sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
 
-    ll_j = _ll_cluster(counts_j, lam_j, B, lam_sum)  # (K,)
+    ll_j = _ll_cluster(counts_j, lam_vec, B, lam_sum)  # (K,)
 
     @jax.jit
     def _best_delta_for_chunk(counts_arr, ll_arr, sizes_arr, cell_vec, c_old, chunk_idx):
@@ -247,9 +247,9 @@ def stochastic_partition_jax(
         dtype = jnp.float64 if enable_x64 else jnp.float32
 
     data_j = jnp.asarray(data, dtype=jnp.int32)
-    lam_j = jnp.asarray(lam, dtype=dtype)
-    lam_sum = jnp.sum(lam_j)
-    B = gammaln(lam_sum) - jnp.sum(gammaln(lam_j))
+    lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
+    lam_sum = jnp.sum(lam_vec)
+    B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 
     clusters_np = np.asarray(clusters, dtype=np.int32)
     K = int(clusters_np.max()) + 1
@@ -257,7 +257,7 @@ def stochastic_partition_jax(
     target_device = _select_device(device)
     if target_device:
         data_j = jax.device_put(data_j, target_device)
-        lam_j = jax.device_put(lam_j, target_device)
+        lam_vec = jax.device_put(lam_vec, target_device)
 
     def _cluster_counts_for_gene(gene_row):
         return jnp.bincount(clusters_np, weights=gene_row, length=K)
@@ -265,15 +265,15 @@ def stochastic_partition_jax(
     counts_j = jax.vmap(_cluster_counts_for_gene)(data_j)  # (G, K)
     sizes_np = np.bincount(clusters_np, minlength=K).astype(np.int32)
     sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
-    ll_j = _ll_cluster(counts_j, lam_j, B, lam_sum)  # (K,)
+    ll_j = _ll_cluster(counts_j, lam_vec, B, lam_sum)  # (K,)
 
     def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx, c_old):
         counts_chunk = counts_arr[:, idx]
         ll_chunk = ll_arr[idx]
         ll_old_after = _ll_remove(
-            counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_j, B, lam_sum, sizes_arr[c_old]
+            counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old]
         )
-        ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_j, B, lam_sum)
+        ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
         delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
         delta = jnp.where(idx == c_old, -jnp.inf, delta)
         pos = jnp.argmax(delta)
@@ -307,8 +307,8 @@ def stochastic_partition_jax(
                 sizes_np[c_old] -= 1
                 sizes_np[cand_host] += 1
                 sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
-                ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_j, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
-                ll_j = ll_j.at[cand_host].set(_ll_cluster(counts_j[:, cand_host:cand_host+1], lam_j, B, lam_sum)[0])
+                ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
+                ll_j = ll_j.at[cand_host].set(_ll_cluster(counts_j[:, cand_host:cand_host+1], lam_vec, B, lam_sum)[0])
                 clusters_np[m] = cand_host
         if total_moves == 0:
             break
