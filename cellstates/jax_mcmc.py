@@ -1,0 +1,238 @@
+"""
+Prototype JAX-backed greedy sweep for cluster reassignment.
+
+This is not a full MCMC replica; it performs one sweep over cells, proposing
+moves to any cluster and accepting only moves that improve total likelihood.
+Chunking over clusters keeps memory bounded on TPU/GPU at the cost of more
+host/device roundtrips.
+
+Assumptions:
+- Operates on an existing partition; no prior optimization.
+- Uses float32 by default for speed/memory; optional float64.
+- Suitable for modest numbers of clusters; for very large K, increase
+  `cluster_chunk` to keep memory down.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+try:  # pragma: no cover - import guard
+    import jax
+    import jax.numpy as jnp
+    from jax.scipy.special import gammaln
+
+    HAS_JAX = True
+except Exception:  # pragma: no cover - import guard
+    jax = None
+    jnp = None
+    gammaln = None
+    HAS_JAX = False
+
+
+def _select_device(device: str | None):
+    if device is None:
+        return None
+    devices = [d for d in jax.devices() if d.platform == ("gpu" if device == "mps" else device)]
+    if not devices:
+        raise ValueError(f"No JAX devices found for platform '{device}'.")
+    return devices[0]
+
+
+def _ll_cluster(counts, lam, B, lam_sum):
+    n_sum = jnp.sum(counts, axis=0)
+    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts + lam[:, None]), axis=0)
+
+
+def _ll_remove(counts_old, cell_counts, lam, B, lam_sum, size_old):
+    """LL of old cluster after removing the cell."""
+    n_sum = jnp.sum(counts_old, axis=0) - jnp.sum(cell_counts)
+    ll = B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_old - cell_counts + lam), axis=0)
+    return jnp.where(size_old > 1, ll, 0.0)
+
+
+def _ll_add(counts_new, cell_counts, lam, B, lam_sum):
+    n_sum = jnp.sum(counts_new, axis=0) + jnp.sum(cell_counts)
+    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_new + cell_counts + lam), axis=0)
+
+
+def greedy_partition_sweep_jax(
+    data: np.ndarray,
+    clusters: np.ndarray,
+    lam: np.ndarray,
+    device: str | None = None,
+    enable_x64: bool = False,
+    dtype=None,
+    cluster_chunk: int = 128,
+    candidate_topk: int | None = None,
+):
+    """
+    One greedy sweep of cell reassignments in JAX.
+
+    Parameters
+    ----------
+    data : array (G, N)
+        Gene counts per cell.
+    clusters : array (N,)
+        Initial cluster labels (int).
+    lam : array (G,)
+        Dirichlet pseudocounts.
+    device : {'cpu','gpu','tpu','mps'}, optional
+        Device preference.
+    enable_x64 : bool, default False
+        Enable float64 precision (default float32).
+    dtype : jnp.dtype, optional
+        Override dtype; defaults to float64 if enable_x64 else float32.
+    cluster_chunk : int, default 128
+        Number of candidate clusters evaluated per chunk (trade memory vs speed).
+    candidate_topk : int, optional
+        If set, restrict proposals to this many best clusters per cell based on
+        a cached delta estimate. Reduces O(N*K) work at the cost of an
+        approximate search (still accepts only improving moves).
+
+    Returns
+    -------
+    new_clusters : np.ndarray
+        Updated cluster assignments.
+    moves_made : int
+        Number of cells moved.
+    total_delta : float
+        Sum of likelihood deltas over accepted moves.
+    """
+    if not HAS_JAX:
+        raise ImportError("JAX is not available; install jax to use this function.")
+
+    if enable_x64:
+        try:
+            jax.config.update("jax_enable_x64", True)
+        except Exception:
+            pass
+
+    if dtype is None:
+        dtype = jnp.float64 if enable_x64 else jnp.float32
+
+    data_j = jnp.asarray(data, dtype=jnp.int32)
+    lam_j = jnp.asarray(lam, dtype=dtype)
+    lam_sum = jnp.sum(lam_j)
+    B = gammaln(lam_sum) - jnp.sum(gammaln(lam_j))
+
+    clusters_np = np.asarray(clusters, dtype=np.int32)
+    K = int(clusters_np.max()) + 1
+
+    target_device = _select_device(device)
+    if target_device:
+        data_j = jax.device_put(data_j, target_device)
+        lam_j = jax.device_put(lam_j, target_device)
+
+    # Build cluster aggregates on device
+    def _cluster_counts_for_gene(gene_row):
+        return jnp.bincount(clusters_np, weights=gene_row, length=K)
+
+    counts_j = jax.vmap(_cluster_counts_for_gene)(data_j)  # (G, K)
+    sizes_np = np.bincount(clusters_np, minlength=K).astype(np.int32)
+    sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
+
+    ll_j = _ll_cluster(counts_j, lam_j, B, lam_sum)  # (K,)
+
+    @jax.jit
+    def _best_delta_for_chunk(counts_arr, ll_arr, sizes_arr, cell_vec, c_old, chunk_idx):
+        start = chunk_idx * cluster_chunk
+        end = jnp.minimum(start + cluster_chunk, counts_arr.shape[1])
+        idx = jnp.arange(start, end, dtype=jnp.int32)
+        counts_chunk = counts_arr[:, idx]
+        ll_chunk = ll_arr[idx]
+        size_chunk = sizes_arr[idx]
+
+        ll_old_after = _ll_remove(counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_j, B, lam_sum, sizes_arr[c_old])
+        ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_j, B, lam_sum)
+
+        # delta = new + old_after - old_before - cand_before
+        delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
+        delta = jnp.where(idx == c_old, -jnp.inf, delta)
+
+        best_pos = jnp.argmax(delta)
+        return delta[best_pos], idx[best_pos]
+
+    moves = 0
+    total_delta = 0.0
+
+    # optional candidate restriction: precompute coarse deltas for pruning
+    delta_cache = None
+    if candidate_topk is not None and candidate_topk > 0:
+        # coarse deltas: LL merge of cell with each cluster minus current cluster
+        # compute in chunks to avoid O(G*K) blowup
+        coarse = []
+        for start in range(0, data_j.shape[1], cluster_chunk):
+            end = min(start + cluster_chunk, data_j.shape[1])
+            cells = data_j[:, start:end]
+            # broadcast over clusters
+            c_new = counts_j[:, None, :]
+            c_old = counts_j[:, clusters_np[start:end]]
+            merged = c_new + cells[:, :, None]
+            ll_new = _ll_cluster(merged.reshape(merged.shape[0], -1), lam_j, B, lam_sum).reshape(
+                merged.shape[1], merged.shape[2]
+            )
+            ll_old = _ll_cluster(c_old, lam_j, B, lam_sum)
+            # delta ~ ll_new - ll_old (rough upper bound)
+            coarse.append(ll_new - ll_old[:, None])
+        delta_cache = np.concatenate([np.asarray(x) for x in coarse], axis=0)
+
+    for m in range(data_j.shape[1]):
+        cell_vec = data_j[:, m]
+        c_old = int(clusters_np[m])
+        best_delta = -np.inf
+        best_cluster = c_old
+
+        # choose candidate clusters
+        if candidate_topk is not None and candidate_topk > 0 and delta_cache is not None:
+            scores = delta_cache[m]
+            top_idx = np.argpartition(-scores, min(candidate_topk, K - 1))[:candidate_topk]
+            candidates = np.unique(np.concatenate([[c_old], top_idx])).astype(np.int32)
+            # chunk over these candidates
+            cand_chunks = [
+                candidates[i : i + cluster_chunk] for i in range(0, len(candidates), cluster_chunk)
+            ]
+        else:
+            cand_chunks = [np.arange(K, dtype=np.int32)[i : i + cluster_chunk] for i in range(0, K, cluster_chunk)]
+
+        for chunk in cand_chunks:
+            chunk_pad = jnp.asarray(chunk, dtype=jnp.int32)
+            # reuse best-delta logic on this chunk only
+            def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx):
+                counts_chunk = counts_arr[:, idx]
+                ll_chunk = ll_arr[idx]
+                size_chunk = sizes_arr[idx]
+                ll_old_after = _ll_remove(
+                    counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_j, B, lam_sum, sizes_arr[c_old]
+                )
+                ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_j, B, lam_sum)
+                delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
+                delta = jnp.where(idx == c_old, -jnp.inf, delta)
+                pos = jnp.argmax(delta)
+                return delta[pos], idx[pos]
+
+            delta_val, cand = jax.jit(_delta_for_indices, donate_argnums=(0,))(counts_j, ll_j, sizes_j, cell_vec, chunk_pad)
+            delta_host = float(delta_val)
+            cand_host = int(cand)
+            if delta_host > best_delta:
+                best_delta = delta_host
+                best_cluster = cand_host
+
+        if best_cluster != c_old and best_delta > 0:
+            moves += 1
+            total_delta += best_delta
+
+            # update aggregates on host via device arrays
+            counts_j = counts_j.at[:, c_old].add(-cell_vec)
+            counts_j = counts_j.at[:, best_cluster].add(cell_vec)
+            sizes_np[c_old] -= 1
+            sizes_np[best_cluster] += 1
+            sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
+
+            # recompute LL for affected clusters
+            ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_j, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
+            ll_j = ll_j.at[best_cluster].set(_ll_cluster(counts_j[:, best_cluster:best_cluster+1], lam_j, B, lam_sum)[0])
+
+            clusters_np[m] = best_cluster
+
+    return clusters_np, moves, total_delta

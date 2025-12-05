@@ -71,7 +71,13 @@ def _gene_contribution_jax(n1, n2, lam):
     return _binomial_p_jax(n1 + n2, lam) - _binomial_p_jax(n1, lam) - _binomial_p_jax(n2, lam)
 
 
-def gene_contribution_table_jax(clst, hierarchy_df, device: str | None = None, enable_x64: bool = True):
+def gene_contribution_table_jax(
+    clst,
+    hierarchy_df,
+    device: str | None = None,
+    enable_x64: bool = True,
+    dtype=None,
+):
     """
     JAX-accelerated equivalent of helpers.gene_contribution_table.
 
@@ -86,6 +92,10 @@ def gene_contribution_table_jax(clst, hierarchy_df, device: str | None = None, e
         JAX's default device selection.
     enable_x64 : bool, default=True
         Enable float64 precision for numerical parity with numpy/scipy.
+    dtype : jnp.dtype, optional
+        Override dtype for the computation. If None, use float64 when
+        enable_x64=True else float32. Passing bfloat16/float32 can
+        significantly lower TPU/GPU memory usage (at the cost of precision).
     """
     if not HAS_JAX:
         raise ImportError("JAX is not available; install jax to use the accelerated path.")
@@ -96,7 +106,8 @@ def gene_contribution_table_jax(clst, hierarchy_df, device: str | None = None, e
         except Exception:
             pass
 
-    dtype = jnp.float64 if enable_x64 else jnp.float32
+    if dtype is None:
+        dtype = jnp.float64 if enable_x64 else jnp.float32
     lam = jnp.asarray(clst.dirichlet_pseudocounts, dtype=dtype)
     counts = jnp.asarray(clst.cluster_umi_counts, dtype=dtype)
     merges = jnp.asarray(hierarchy_df.loc[:, ["cluster_old", "cluster_new"]].to_numpy(np.int32))
@@ -120,6 +131,7 @@ def gene_contribution_table_jax(clst, hierarchy_df, device: str | None = None, e
         _, scores = jax.lax.scan(merge_step, counts_arr, merges_arr)
         return scores
 
-    scan_fn = jax.jit(_scan)
+    # donate buffers so XLA can reuse memory and reduce peak footprint
+    scan_fn = jax.jit(_scan, donate_argnums=(0, 1))
     scores = scan_fn(counts, merges, lam)
     return np.asarray(scores)
