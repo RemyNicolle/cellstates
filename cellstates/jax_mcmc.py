@@ -40,20 +40,23 @@ def _select_device(device: str | None):
 
 
 def _ll_cluster(counts, lam, B, lam_sum):
+    lam_col = lam[:, None]
     n_sum = jnp.sum(counts, axis=0)
-    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts + lam[:, None]), axis=0)
+    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts + lam_col), axis=0)
 
 
 def _ll_remove(counts_old, cell_counts, lam, B, lam_sum, size_old):
     """LL of old cluster after removing the cell."""
+    lam_col = lam[:, None]
     n_sum = jnp.sum(counts_old, axis=0) - jnp.sum(cell_counts)
-    ll = B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_old - cell_counts + lam), axis=0)
+    ll = B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_old - cell_counts + lam_col), axis=0)
     return jnp.where(size_old > 1, ll, 0.0)
 
 
 def _ll_add(counts_new, cell_counts, lam, B, lam_sum):
+    lam_col = lam[:, None]
     n_sum = jnp.sum(counts_new, axis=0) + jnp.sum(cell_counts)
-    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_new + cell_counts + lam), axis=0)
+    return B - gammaln(n_sum + lam_sum) + jnp.sum(gammaln(counts_new + cell_counts + lam_col), axis=0)
 
 
 def greedy_partition_sweep_jax(
@@ -122,7 +125,7 @@ def greedy_partition_sweep_jax(
     target_device = _select_device(device)
     if target_device:
         data_j = jax.device_put(data_j, target_device)
-        lam_j = jax.device_put(lam_j, target_device)
+        lam_vec = jax.device_put(lam_vec, target_device)
 
     # Build cluster aggregates on device
     def _cluster_counts_for_gene(gene_row):
@@ -143,8 +146,8 @@ def greedy_partition_sweep_jax(
         ll_chunk = ll_arr[idx]
         size_chunk = sizes_arr[idx]
 
-        ll_old_after = _ll_remove(counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_j, B, lam_sum, sizes_arr[c_old])
-        ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_j, B, lam_sum)
+        ll_old_after = _ll_remove(counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
+        ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
 
         # delta = new + old_after - old_before - cand_before
         delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
@@ -180,9 +183,9 @@ def greedy_partition_sweep_jax(
                 ll_chunk = ll_arr[idx]
                 size_chunk = sizes_arr[idx]
                 ll_old_after = _ll_remove(
-                    counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_j, B, lam_sum, sizes_arr[c_old]
+                    counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old]
                 )
-                ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_j, B, lam_sum)
+                ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
                 delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
                 delta = jnp.where(idx == c_old, -jnp.inf, delta)
                 pos = jnp.argmax(delta)
@@ -207,8 +210,8 @@ def greedy_partition_sweep_jax(
             sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
 
             # recompute LL for affected clusters
-            ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_j, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
-            ll_j = ll_j.at[best_cluster].set(_ll_cluster(counts_j[:, best_cluster:best_cluster+1], lam_j, B, lam_sum)[0])
+            ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
+            ll_j = ll_j.at[best_cluster].set(_ll_cluster(counts_j[:, best_cluster:best_cluster+1], lam_vec, B, lam_sum)[0])
 
             clusters_np[m] = best_cluster
 
