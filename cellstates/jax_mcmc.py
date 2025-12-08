@@ -213,8 +213,10 @@ def greedy_partition_sweep_jax(
             sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
 
             # recompute LL for affected clusters
-            ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
-            ll_j = ll_j.at[best_cluster].set(_ll_cluster(counts_j[:, best_cluster:best_cluster+1], lam_vec, B, lam_sum)[0])
+            slice_old = jax.lax.dynamic_slice(counts_j, (0, c_old), (G, 1))
+            slice_new = jax.lax.dynamic_slice(counts_j, (0, best_cluster), (G, 1))
+            ll_j = ll_j.at[c_old].set(_ll_cluster(slice_old, lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
+            ll_j = ll_j.at[best_cluster].set(_ll_cluster(slice_new, lam_vec, B, lam_sum)[0])
 
             clusters_np[m] = best_cluster
 
@@ -278,7 +280,6 @@ def stochastic_partition_jax(
     def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx, c_old):
         counts_chunk = jnp.take(counts_arr, idx, axis=1)
         ll_chunk = jnp.take(ll_arr, idx, axis=0)
-        # dynamic slice for old cluster counts (shape: G x 1)
         old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (G, 1))
         ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
         ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
@@ -314,8 +315,10 @@ def stochastic_partition_jax(
                 sizes_np[c_old] -= 1
                 sizes_np[cand_host] += 1
                 sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
-                ll_j = ll_j.at[c_old].set(_ll_cluster(counts_j[:, c_old:c_old+1], lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
-                ll_j = ll_j.at[cand_host].set(_ll_cluster(counts_j[:, cand_host:cand_host+1], lam_vec, B, lam_sum)[0])
+                slice_old = jax.lax.dynamic_slice(counts_j, (0, c_old), (G, 1))
+                slice_new = jax.lax.dynamic_slice(counts_j, (0, cand_host), (G, 1))
+                ll_j = ll_j.at[c_old].set(_ll_cluster(slice_old, lam_vec, B, lam_sum)[0] if sizes_np[c_old] > 0 else 0.0)
+                ll_j = ll_j.at[cand_host].set(_ll_cluster(slice_new, lam_vec, B, lam_sum)[0])
                 clusters_np[m] = cand_host
         if total_moves == 0:
             break
