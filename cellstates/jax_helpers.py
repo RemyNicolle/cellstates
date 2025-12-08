@@ -51,10 +51,7 @@ def _select_device(device: str | None):
     devices = available_jax_devices(device)
     if devices:
         return devices[0]
-    all_devices = available_jax_devices(None)
-    if all_devices:
-        return all_devices[0]
-    raise ValueError(f"No JAX devices found; requested platform '{device}'.")
+    return None
 
 
 def _binomial_p_jax(n, lam):
