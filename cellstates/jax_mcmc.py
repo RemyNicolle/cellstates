@@ -274,9 +274,9 @@ def stochastic_partition_jax(
     def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx, c_old):
         counts_chunk = counts_arr[:, idx]
         ll_chunk = ll_arr[idx]
-        ll_old_after = _ll_remove(
-            counts_arr[:, c_old:c_old+1], cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old]
-        )
+        # dynamic slice for old cluster counts (shape: G x 1)
+        old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
+        ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
         ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
         delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
         delta = jnp.where(idx == c_old, -jnp.inf, delta)
