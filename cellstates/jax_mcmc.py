@@ -138,6 +138,8 @@ def greedy_partition_sweep_jax(
 
     ll_j = _ll_cluster(counts_j, lam_vec, B, lam_sum)  # (K,)
 
+    G = counts_j.shape[0]
+
     @jax.jit
     def _best_delta_for_chunk(counts_arr, ll_arr, sizes_arr, cell_vec, c_old, chunk_idx):
         start = chunk_idx * cluster_chunk
@@ -147,7 +149,7 @@ def greedy_partition_sweep_jax(
         ll_chunk = jnp.take(ll_arr, idx, axis=0)
         size_chunk = jnp.take(sizes_arr, idx, axis=0)
 
-        old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
+        old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (G, 1))
         ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
         ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
 
@@ -184,7 +186,7 @@ def greedy_partition_sweep_jax(
                 counts_chunk = jnp.take(counts_arr, idx, axis=1)
                 ll_chunk = jnp.take(ll_arr, idx, axis=0)
                 size_chunk = jnp.take(sizes_arr, idx, axis=0)
-                old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
+                old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (G, 1))
                 ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
                 ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
                 delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
@@ -271,11 +273,13 @@ def stochastic_partition_jax(
     sizes_j = jax.device_put(sizes_np, target_device) if target_device else jnp.asarray(sizes_np)
     ll_j = _ll_cluster(counts_j, lam_vec, B, lam_sum)  # (K,)
 
+    G = counts_j.shape[0]
+
     def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx, c_old):
-        counts_chunk = counts_arr[:, idx]
-        ll_chunk = ll_arr[idx]
+        counts_chunk = jnp.take(counts_arr, idx, axis=1)
+        ll_chunk = jnp.take(ll_arr, idx, axis=0)
         # dynamic slice for old cluster counts (shape: G x 1)
-        old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
+        old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (G, 1))
         ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
         ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
         delta = ll_new + ll_old_after - ll_arr[c_old] - ll_chunk
