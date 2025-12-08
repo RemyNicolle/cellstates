@@ -288,8 +288,6 @@ def stochastic_partition_jax(
         pos = jnp.argmax(delta)
         return delta[pos], idx[pos]
 
-    delta_fn = jax.jit(_delta_for_indices, donate_argnums=(0,))
-
     rng = np.random.default_rng(seed)
     total_moves = 0
     total_delta = 0.0
@@ -304,7 +302,7 @@ def stochastic_partition_jax(
             cand = rng.choice(K, size=size, replace=True).astype(np.int32)
             cand[0] = c_old  # ensure current cluster is included
             cand_dev = jnp.asarray(cand, dtype=jnp.int32)
-            delta_val, cand_best = delta_fn(counts_j, ll_j, sizes_j, cell_vec, cand_dev, c_old)
+            delta_val, cand_best = _delta_for_indices(counts_j, ll_j, sizes_j, cell_vec, cand_dev, c_old)
             delta_host = float(delta_val)
             cand_host = int(cand_best)
             if cand_host != c_old and delta_host > 0:
