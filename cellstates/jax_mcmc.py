@@ -34,9 +34,13 @@ def _select_device(device: str | None):
     if device is None:
         return None
     devices = [d for d in jax.devices() if d.platform == ("gpu" if device == "mps" else device)]
-    if not devices:
-        raise ValueError(f"No JAX devices found for platform '{device}'.")
-    return devices[0]
+    if devices:
+        return devices[0]
+    # Fallback: use default device if requested platform is absent (e.g., CPU on TPU runtime)
+    all_devices = jax.devices()
+    if all_devices:
+        return all_devices[0]
+    raise ValueError(f"No JAX devices found; requested platform '{device}'.")
 
 
 def _ll_cluster(counts, lam, B, lam_sum):
