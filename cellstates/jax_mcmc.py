@@ -298,11 +298,10 @@ def stochastic_partition_jax(
         for m in order:
             cell_vec = data_j[:, m]
             c_old = int(clusters_np[m])
-            # sample proposals
-            cand = rng.choice(K, size=min(proposals_per_cell, K), replace=False)
-            if c_old not in cand:
-                cand[0] = c_old
-            cand = np.unique(cand).astype(np.int32)
+            # sample a fixed-size proposal set to keep shapes static
+            size = proposals_per_cell if proposals_per_cell > 0 else 1
+            cand = rng.choice(K, size=size, replace=True).astype(np.int32)
+            cand[0] = c_old  # ensure current cluster is included
             cand_dev = jnp.asarray(cand, dtype=jnp.int32)
             delta_val, cand_best = delta_fn(counts_j, ll_j, sizes_j, cell_vec, cand_dev, c_old)
             delta_host = float(delta_val)
