@@ -143,9 +143,9 @@ def greedy_partition_sweep_jax(
         start = chunk_idx * cluster_chunk
         end = jnp.minimum(start + cluster_chunk, counts_arr.shape[1])
         idx = jnp.arange(start, end, dtype=jnp.int32)
-        counts_chunk = counts_arr[:, idx]
-        ll_chunk = ll_arr[idx]
-        size_chunk = sizes_arr[idx]
+        counts_chunk = jnp.take(counts_arr, idx, axis=1)
+        ll_chunk = jnp.take(ll_arr, idx, axis=0)
+        size_chunk = jnp.take(sizes_arr, idx, axis=0)
 
         old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
         ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
@@ -181,9 +181,9 @@ def greedy_partition_sweep_jax(
             chunk_pad = jnp.asarray(chunk, dtype=jnp.int32)
             # reuse best-delta logic on this chunk only
             def _delta_for_indices(counts_arr, ll_arr, sizes_arr, cell_vec, idx):
-                counts_chunk = counts_arr[:, idx]
-                ll_chunk = ll_arr[idx]
-                size_chunk = sizes_arr[idx]
+                counts_chunk = jnp.take(counts_arr, idx, axis=1)
+                ll_chunk = jnp.take(ll_arr, idx, axis=0)
+                size_chunk = jnp.take(sizes_arr, idx, axis=0)
                 old_slice = jax.lax.dynamic_slice(counts_arr, (0, c_old), (counts_arr.shape[0], 1))
                 ll_old_after = _ll_remove(old_slice, cell_vec[:, None], lam_vec, B, lam_sum, sizes_arr[c_old])
                 ll_new = _ll_add(counts_chunk, cell_vec[:, None], lam_vec, B, lam_sum)
