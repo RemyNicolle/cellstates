@@ -114,8 +114,8 @@ def run_gibbs_partition_jax(
     def ll_for_cluster(counts_col):
         c_j = jnp.asarray(counts_col, dtype=dtype)
         val = _ll_cluster(c_j[:, None], lam_vec, B, lam_sum)
-        # ensure conversion to a host Python scalar
-        return float(np.array(val).reshape(()).item())
+        # ensure conversion to a host Python scalar regardless of shape
+        return float(np.asarray(val).squeeze().item())
 
     for _ in range(sweeps):
         for i in range(N):
