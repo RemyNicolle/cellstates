@@ -226,13 +226,14 @@ def greedy_partition_sweep_jax(
 def stochastic_partition_jax(
     data: np.ndarray,
     clusters: np.ndarray,
-    lam: np.ndarray,
+    lam: np.ndarray | float | None = None,
     sweeps: int = 3,
     proposals_per_cell: int = 16,
     device: str | None = None,
     enable_x64: bool = False,
     dtype=None,
     seed: int = 0,
+    lam_alpha: float = 0.001,
 ):
     """
     Alternative stochastic JAX partitioner.
@@ -255,7 +256,12 @@ def stochastic_partition_jax(
         dtype = jnp.float64 if enable_x64 else jnp.float32
 
     data_j = jnp.asarray(data, dtype=jnp.int32)
-    lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
+    if lam is None:
+        lam = float(lam_alpha)
+    if np.isscalar(lam):
+        lam_vec = jnp.full(data.shape[0], float(lam), dtype=dtype)
+    else:
+        lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
     lam_sum = jnp.sum(lam_vec)
     B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 

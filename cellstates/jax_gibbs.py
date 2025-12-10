@@ -43,12 +43,13 @@ def _ll_cluster(counts, lam, B, lam_sum):
 def run_gibbs_partition_jax(
     data: np.ndarray,
     clusters: np.ndarray,
-    lam: np.ndarray,
+    lam: np.ndarray | float | None = None,
     sweeps: int = 3,
     device: str | None = None,
     enable_x64: bool = False,
     dtype=None,
     seed: int = 0,
+    lam_alpha: float = 0.001,
 ):
     """
     Simple Gibbs sampler over cluster labels.
@@ -91,7 +92,12 @@ def run_gibbs_partition_jax(
     K = int(clusters_np.max()) + 1
 
     data_j = jnp.asarray(data, dtype=jnp.int32)
-    lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
+    if lam is None:
+        lam = float(lam_alpha)
+    if np.isscalar(lam):
+        lam_vec = jnp.full(G, float(lam), dtype=dtype)
+    else:
+        lam_vec = jnp.asarray(lam, dtype=dtype).reshape(-1)
     lam_sum = jnp.sum(lam_vec)
     B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 
