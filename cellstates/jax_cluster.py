@@ -115,7 +115,8 @@ def get_cluster_hierarchy_jax_from_counts(
         ll_merge = _cluster_ll(merged, lam_j, B, lam_sum)
         return ll_merge - (ll1 + ll2)
 
-    delta_fn = jax.jit(_delta_for_pairs, donate_argnums=(0,))
+    # avoid donate_argnums to suppress buffer donation warnings on some devices
+    delta_fn = jax.jit(_delta_for_pairs)
 
     while active.sum() > 1:
         # materialize list of active indices on host
