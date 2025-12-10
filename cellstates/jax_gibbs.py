@@ -113,7 +113,8 @@ def run_gibbs_partition_jax(
 
     def ll_for_cluster(counts_col):
         c_j = jnp.asarray(counts_col, dtype=dtype)
-        return float(np.asarray(_ll_cluster(c_j[:, None], lam_vec, B, lam_sum))[0])
+        val = _ll_cluster(c_j[:, None], lam_vec, B, lam_sum)
+        return float(np.asarray(val).reshape(-1)[0])
 
     for _ in range(sweeps):
         for i in range(N):
