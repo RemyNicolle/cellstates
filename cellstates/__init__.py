@@ -13,6 +13,7 @@ from .jax_mcmc import stochastic_partition_jax, stochastic_partition_torch
 from .jax_mcmc_loop import run_greedy_partition_jax
 from .jax_gibbs import run_gibbs_partition_jax
 from .jax_mcmc import run_gibbs_partition_torch
+from .accel import detect_device, verify_acceleration, run_stochastic_accel, run_gibbs_accel
 from .plotting import plot_hierarchy_scipy
 try:
     from .plotting import plot_hierarchy_ete3
