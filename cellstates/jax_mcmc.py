@@ -29,6 +29,14 @@ except Exception:  # pragma: no cover - import guard
     gammaln = None
     HAS_JAX = False
 
+try:  # pragma: no cover - import guard
+    import torch
+
+    HAS_TORCH = True
+except Exception:  # pragma: no cover - import guard
+    torch = None
+    HAS_TORCH = False
+
 
 def _select_device(device: str | None):
     if device is None:
@@ -328,3 +336,200 @@ def stochastic_partition_jax(
             break
 
     return clusters_np, total_moves, total_delta
+
+
+# --------- PyTorch alternatives (GPU/CPU/MPS) ---------
+
+def _select_torch_device(device: str | None):
+    if not HAS_TORCH:
+        return None
+    if device is None:
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    dev = device.lower()
+    if dev in {"gpu", "cuda"} and torch.cuda.is_available():
+        return torch.device("cuda")
+    if dev == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device(device)
+
+
+def _torch_ll_cluster(counts, lam_vec, B, lam_sum):
+    n_sum = counts.sum()
+    return B - torch.lgamma(n_sum + lam_sum) + torch.lgamma(counts + lam_vec).sum()
+
+
+def stochastic_partition_torch(
+    data: np.ndarray,
+    clusters: np.ndarray,
+    lam: np.ndarray | float | None = None,
+    sweeps: int = 3,
+    proposals_per_cell: int = 16,
+    device: str | None = None,
+    dtype=None,
+    seed: int = 0,
+    lam_alpha: float = 0.001,
+):
+    """
+    PyTorch alternative to stochastic_partition_jax. Uses simple Python loops
+    and torch tensors on the selected device (CPU/GPU/MPS).
+    """
+    if not HAS_TORCH:
+        raise ImportError("PyTorch is not available; install torch to use this function.")
+
+    torch_device = _select_torch_device(device)
+    if dtype is None:
+        dtype = torch.float32
+
+    data_t = torch.as_tensor(data, dtype=torch.int64, device=torch_device)
+    G, N = data_t.shape
+    clusters_np = np.asarray(clusters, dtype=np.int32)
+    K = int(clusters_np.max()) + 1
+
+    if lam is None:
+        lam = float(lam_alpha)
+    if np.isscalar(lam):
+        lam_vec = torch.full((G,), float(lam), dtype=dtype, device=torch_device)
+    else:
+        lam_vec = torch.as_tensor(lam, dtype=dtype, device=torch_device).view(-1)
+    lam_sum = lam_vec.sum()
+    B = torch.lgamma(lam_sum) - torch.lgamma(lam_vec).sum()
+
+    counts = torch.zeros((G, K), dtype=torch.int64, device=torch_device)
+    for k in range(K):
+        mask = clusters_np == k
+        if mask.any():
+            counts[:, k] = data_t[:, mask].sum(dim=1)
+    sizes = torch.as_tensor(np.bincount(clusters_np, minlength=K), dtype=torch.int64, device=torch_device)
+
+    ll_clusters = torch.zeros(K, dtype=dtype, device=torch_device)
+    for k in range(K):
+        if sizes[k] > 0:
+            ll_clusters[k] = _torch_ll_cluster(counts[:, k].to(dtype), lam_vec, B, lam_sum)
+
+    rng = np.random.default_rng(seed)
+    total_moves = 0
+    total_delta = 0.0
+
+    for _ in range(sweeps):
+        order = rng.permutation(N)
+        for m in order:
+            c_old = int(clusters_np[m])
+            cell_vec = data_t[:, m].to(dtype)
+
+            size = proposals_per_cell if proposals_per_cell > 0 else 1
+            cand = rng.choice(K, size=size, replace=True).astype(np.int64)
+            cand[0] = c_old
+
+            best_delta = float("-inf")
+            best_cand = c_old
+
+            counts_old = counts[:, c_old].to(dtype)
+            ll_old_before = ll_clusters[c_old] if sizes[c_old] > 0 else torch.tensor(0.0, device=torch_device, dtype=dtype)
+            ll_old_after = _torch_ll_cluster(counts_old - cell_vec, lam_vec, B, lam_sum) if sizes[c_old] > 1 else torch.tensor(0.0, device=torch_device, dtype=dtype)
+
+            for c_new in cand:
+                if c_new == c_old:
+                    continue
+                c_new_int = int(c_new)
+                ll_new_before = ll_clusters[c_new_int] if sizes[c_new_int] > 0 else torch.tensor(0.0, device=torch_device, dtype=dtype)
+                ll_new_after = _torch_ll_cluster(counts[:, c_new_int].to(dtype) + cell_vec, lam_vec, B, lam_sum)
+                delta = float((ll_new_after + ll_old_after - ll_old_before - ll_new_before).cpu().item())
+                if delta > best_delta and delta > 0:
+                    best_delta = delta
+                    best_cand = c_new_int
+
+            if best_cand != c_old:
+                total_moves += 1
+                total_delta += best_delta
+                counts[:, c_old] -= cell_vec.to(torch.int64)
+                counts[:, best_cand] += cell_vec.to(torch.int64)
+                sizes[c_old] -= 1
+                sizes[best_cand] += 1
+                ll_clusters[c_old] = _torch_ll_cluster(counts[:, c_old].to(dtype), lam_vec, B, lam_sum) if sizes[c_old] > 0 else torch.tensor(0.0, device=torch_device, dtype=dtype)
+                ll_clusters[best_cand] = _torch_ll_cluster(counts[:, best_cand].to(dtype), lam_vec, B, lam_sum)
+                clusters_np[m] = best_cand
+
+    return clusters_np, total_moves, total_delta
+
+
+def run_gibbs_partition_torch(
+    data: np.ndarray,
+    clusters: np.ndarray,
+    lam: np.ndarray | float | None = None,
+    sweeps: int = 3,
+    device: str | None = None,
+    dtype=None,
+    seed: int = 0,
+    lam_alpha: float = 0.001,
+):
+    """
+    PyTorch alternative to run_gibbs_partition_jax. Performs Gibbs sampling on
+    CPU/GPU using torch.
+    """
+    if not HAS_TORCH:
+        raise ImportError("PyTorch is not available; install torch to use this function.")
+
+    torch_device = _select_torch_device(device)
+    if dtype is None:
+        dtype = torch.float32
+
+    data_t = torch.as_tensor(data, dtype=torch.int64, device=torch_device)
+    G, N = data_t.shape
+    clusters_np = np.asarray(clusters, dtype=np.int32)
+    K = int(clusters_np.max()) + 1
+
+    if lam is None:
+        lam = float(lam_alpha)
+    if np.isscalar(lam):
+        lam_vec = torch.full((G,), float(lam), dtype=dtype, device=torch_device)
+    else:
+        lam_vec = torch.as_tensor(lam, dtype=dtype, device=torch_device).view(-1)
+    lam_sum = lam_vec.sum()
+    B = torch.lgamma(lam_sum) - torch.lgamma(lam_vec).sum()
+
+    counts = torch.zeros((G, K), dtype=torch.int64, device=torch_device)
+    for k in range(K):
+        mask = clusters_np == k
+        if mask.any():
+            counts[:, k] = data_t[:, mask].sum(dim=1)
+    sizes = torch.as_tensor(np.bincount(clusters_np, minlength=K), dtype=torch.int64, device=torch_device)
+
+    def ll_col(idx):
+        if sizes[idx] == 0:
+            return torch.tensor(0.0, device=torch_device, dtype=dtype)
+        return _torch_ll_cluster(counts[:, idx].to(dtype), lam_vec, B, lam_sum)
+
+    rng = np.random.default_rng(seed)
+    moves = 0
+    total_delta = 0.0
+
+    for _ in range(sweeps):
+        order = rng.permutation(N)
+        for m in order:
+            c_old = int(clusters_np[m])
+            cell_vec = data_t[:, m].to(dtype)
+            counts[:, c_old] -= cell_vec.to(torch.int64)
+            sizes[c_old] -= 1
+
+            ll_base = torch.stack([ll_col(k) for k in range(K)])
+            ll_new = torch.stack([_torch_ll_cluster(counts[:, k].to(dtype) + cell_vec, lam_vec, B, lam_sum) for k in range(K)])
+
+            logits = (ll_new - ll_base).cpu().numpy()
+            logits = logits - logits.max()
+            probs = np.exp(logits)
+            probs = probs / probs.sum()
+            c_new = int(rng.choice(K, p=probs))
+
+            counts[:, c_new] += cell_vec.to(torch.int64)
+            sizes[c_new] += 1
+            clusters_np[m] = c_new
+
+            if c_new != c_old:
+                moves += 1
+                total_delta += float((ll_new[c_new] - ll_base[c_new]).cpu().item())
+
+    return clusters_np, moves, total_delta
