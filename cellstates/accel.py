@@ -89,6 +89,7 @@ def run_stochastic_accel(
     Returns (labels, moves, delta), backend_label.
     """
     backend = backend.lower()
+    clusters_local = np.array(clusters, dtype=np.int32, copy=True)
     if device is None:
         device = detect_device(backend)
 
@@ -102,7 +103,7 @@ def run_stochastic_accel(
 
         result = stochastic_partition_jax(
             data,
-            clusters,
+            clusters_local,
             lam=lam_local,
             sweeps=sweeps,
             proposals_per_cell=proposals_per_cell,
@@ -119,7 +120,7 @@ def run_stochastic_accel(
 
         result = stochastic_partition_torch(
             data,
-            clusters,
+            clusters_local,
             lam=lam_local,
             sweeps=sweeps,
             proposals_per_cell=proposals_per_cell,
@@ -179,7 +180,7 @@ def run_gibbs_accel(
         return cap
 
     max_sweeps = _heuristic_cap(int(max_sweeps))
-    labels_local = np.asarray(clusters, dtype=np.int32)
+    labels_local = np.array(clusters, dtype=np.int32, copy=True)
     total_moves = 0
     total_delta = 0.0
     sweeps_done = 0
