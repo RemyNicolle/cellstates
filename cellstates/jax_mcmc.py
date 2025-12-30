@@ -128,7 +128,7 @@ def greedy_partition_sweep_jax(
     lam_sum = jnp.sum(lam_vec)
     B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 
-    clusters_np = np.asarray(clusters, dtype=np.int32)
+    clusters_np = np.array(clusters, dtype=np.int32, copy=True)
     K = int(clusters_np.max()) + 1
 
     target_device = _select_device(device)
@@ -273,7 +273,7 @@ def stochastic_partition_jax(
     lam_sum = jnp.sum(lam_vec)
     B = gammaln(lam_sum) - jnp.sum(gammaln(lam_vec))
 
-    clusters_np = np.asarray(clusters, dtype=np.int32)
+    clusters_np = np.array(clusters, dtype=np.int32, copy=True)
     K = int(clusters_np.max()) + 1
 
     target_device = _select_device(device)
