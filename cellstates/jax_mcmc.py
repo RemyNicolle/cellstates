@@ -495,41 +495,45 @@ def run_gibbs_partition_torch(
     for k in range(K):
         mask = clusters_np == k
         if mask.any():
-            counts[:, k] = data_t[:, mask].sum(dim=1)
+            mask_t = torch.from_numpy(mask).to(torch_device)
+            counts[:, k] = data_t[:, mask_t].sum(dim=1)
     sizes = torch.as_tensor(np.bincount(clusters_np, minlength=K), dtype=torch.int64, device=torch_device)
+    clusters_t = torch.as_tensor(clusters_np, dtype=torch.int64, device=torch_device)
 
     def ll_col(idx):
         if sizes[idx] == 0:
             return torch.tensor(0.0, device=torch_device, dtype=dtype)
         return _torch_ll_cluster(counts[:, idx].to(dtype), lam_vec, B, lam_sum)
 
-    rng = np.random.default_rng(seed)
+    gen = torch.Generator(device=torch_device)
+    gen.manual_seed(int(seed))
     moves = 0
     total_delta = 0.0
 
     for _ in range(sweeps):
-        order = rng.permutation(N)
-        for m in order:
-            c_old = int(clusters_np[m])
+        order = torch.randperm(N, generator=gen, device=torch_device)
+        for m_t in order:
+            m = int(m_t.item())
+            c_old = int(clusters_t[m].item())
             cell_vec = data_t[:, m].to(dtype)
             counts[:, c_old] -= cell_vec.to(torch.int64)
             sizes[c_old] -= 1
 
             ll_base = torch.stack([ll_col(k) for k in range(K)])
-            ll_new = torch.stack([_torch_ll_cluster(counts[:, k].to(dtype) + cell_vec, lam_vec, B, lam_sum) for k in range(K)])
+            ll_new = torch.stack(
+                [_torch_ll_cluster(counts[:, k].to(dtype) + cell_vec, lam_vec, B, lam_sum) for k in range(K)]
+            )
 
-            logits = (ll_new - ll_base).cpu().numpy()
-            logits = logits - logits.max()
-            probs = np.exp(logits)
-            probs = probs / probs.sum()
-            c_new = int(rng.choice(K, p=probs))
+            probs = torch.softmax(ll_new - ll_base, dim=0)
+            c_new = int(torch.multinomial(probs, 1, generator=gen).item())
 
             counts[:, c_new] += cell_vec.to(torch.int64)
             sizes[c_new] += 1
-            clusters_np[m] = c_new
+            clusters_t[m] = c_new
 
             if c_new != c_old:
                 moves += 1
-                total_delta += float((ll_new[c_new] - ll_base[c_new]).cpu().item())
+                total_delta += float((ll_new[c_new] - ll_base[c_new]).item())
 
+    clusters_np = clusters_t.cpu().numpy()
     return clusters_np, moves, total_delta
