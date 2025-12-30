@@ -140,47 +140,132 @@ def run_gibbs_accel(
     sweeps: int = 3,
     seed: int = 0,
     lam_alpha: float = 0.001,
+    max_sweeps: int | None = None,
+    stop_tol: float | None = None,
+    use_mem_heuristic: bool = True,
+    return_sweeps: bool = False,
 ):
     """
     Run Gibbs partition using the selected backend (JAX or torch).
-    Returns (labels, moves, delta), backend_label.
+    If stop_tol or max_sweeps are provided, runs adaptively until moves per cell
+    fall below stop_tol or max_sweeps is reached. When return_sweeps=True,
+    returns (labels, moves, delta, sweeps_done).
     """
     backend = backend.lower()
     if device is None:
         device = detect_device(backend)
 
+    sweeps_per_call = max(1, int(sweeps))
+    max_sweeps = max_sweeps if max_sweeps is not None else sweeps_per_call
+
+    def _heuristic_cap(cap: int) -> int:
+        if not use_mem_heuristic:
+            return cap
+        if backend == "torch":
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    _, total = torch.cuda.mem_get_info()
+                    total_gb = total / 1e9
+                    if total_gb < 8:
+                        return min(cap, 20)
+                    if total_gb < 16:
+                        return min(cap, 40)
+                    if total_gb < 32:
+                        return min(cap, 70)
+            except Exception:
+                pass
+        return cap
+
+    max_sweeps = _heuristic_cap(int(max_sweeps))
+    labels_local = np.asarray(clusters, dtype=np.int32)
+    total_moves = 0
+    total_delta = 0.0
+    sweeps_done = 0
+    backend_label = f"{backend}:{device}"
+
     if backend == "jax":
         import jax
         from .jax_gibbs import run_gibbs_partition_jax
 
-        result = run_gibbs_partition_jax(
-            data,
-            clusters,
-            lam=None,
-            sweeps=sweeps,
-            device=device,
-            enable_x64=False,
-            dtype=jax.numpy.float32,
-            seed=seed,
-            lam_alpha=lam_alpha,
-        )
-        return result, f"jax:{device}"
+        while sweeps_done < max_sweeps:
+            result = run_gibbs_partition_jax(
+                data,
+                labels_local,
+                lam=None,
+                sweeps=min(sweeps_per_call, max_sweeps - sweeps_done),
+                device=device,
+                enable_x64=False,
+                dtype=jax.numpy.float32,
+                seed=seed + sweeps_done,
+                lam_alpha=lam_alpha,
+            )
+            labels_local, moves, delta = result
+            total_moves += moves
+            total_delta += delta
+            sweeps_done += min(sweeps_per_call, max_sweeps - sweeps_done)
+            if stop_tol is not None and moves / labels_local.shape[0] < stop_tol:
+                break
+        backend_label = f"jax:{device}"
 
-    if backend == "torch":
+    elif backend == "torch":
         import torch
         from .jax_mcmc import run_gibbs_partition_torch
 
-        result = run_gibbs_partition_torch(
-            data,
-            clusters,
-            lam=None,
-            sweeps=sweeps,
-            device=device,
-            dtype=torch.float32,
-            seed=seed,
-            lam_alpha=lam_alpha,
-        )
-        return result, f"torch:{device}"
+        while sweeps_done < max_sweeps:
+            result = run_gibbs_partition_torch(
+                data,
+                labels_local,
+                lam=None,
+                sweeps=min(sweeps_per_call, max_sweeps - sweeps_done),
+                device=device,
+                dtype=torch.float32,
+                seed=seed + sweeps_done,
+                lam_alpha=lam_alpha,
+            )
+            labels_local, moves, delta = result
+            total_moves += moves
+            total_delta += delta
+            sweeps_done += min(sweeps_per_call, max_sweeps - sweeps_done)
+            if stop_tol is not None and moves / labels_local.shape[0] < stop_tol:
+                break
+        backend_label = f"torch:{device}"
 
-    raise ValueError("backend must be 'jax' or 'torch'")
+    else:
+        raise ValueError("backend must be 'jax' or 'torch'")
 
+    result = (labels_local, total_moves, total_delta, sweeps_done) if return_sweeps else (labels_local, total_moves, total_delta)
+    return result, backend_label
+
+
+def run_gibbs_adaptive(
+    data: np.ndarray,
+    clusters: np.ndarray,
+    backend: str = "jax",
+    device: str | None = None,
+    lam_alpha: float = 0.001,
+    seed: int = 0,
+    max_sweeps: int = 100,
+    stop_tol: float = 0.001,
+    sweeps_per_call: int = 1,
+    use_mem_heuristic: bool = True,
+):
+    """
+    Convenience wrapper that runs Gibbs with adaptive stopping.
+    Returns (labels, moves, delta, sweeps_done), backend_label.
+    """
+    result, backend_label = run_gibbs_accel(
+        data,
+        clusters,
+        backend=backend,
+        device=device,
+        sweeps=sweeps_per_call,
+        seed=seed,
+        lam_alpha=lam_alpha,
+        max_sweeps=max_sweeps,
+        stop_tol=stop_tol,
+        use_mem_heuristic=use_mem_heuristic,
+        return_sweeps=True,
+    )
+    return result, backend_label
