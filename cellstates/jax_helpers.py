@@ -33,16 +33,24 @@ def available_jax_devices(platform: str | None = None):
     ----------
     platform : str, optional
         Filter devices by platform. Accepts 'cpu', 'gpu', 'tpu', or 'mps'
-        (an alias for gpu on Apple silicon).
+        (an alias for gpu on Apple silicon). 'cuda' and 'rocm' are treated
+        as GPU aliases for JAX installs that report those platforms.
     """
     if not HAS_JAX:
         return []
 
-    if platform == "mps":
-        platform = "gpu"
+    devices = list(jax.devices())
+
     if platform:
-        return [d for d in jax.devices() if d.platform == platform]
-    return list(jax.devices())
+        platform = platform.lower()
+        if platform == "mps":
+            platform = "gpu"
+        if platform in {"gpu", "cuda", "rocm"}:
+            gpu_aliases = {"gpu", "cuda", "rocm"}
+            return [d for d in devices if getattr(d, "platform", None) in gpu_aliases]
+        return [d for d in devices if getattr(d, "platform", None) == platform]
+
+    return devices
 
 
 def _select_device(device: str | None):
